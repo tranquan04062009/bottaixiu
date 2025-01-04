@@ -26,7 +26,7 @@ def handle_message(update: Update, context: CallbackContext):
     update.message.reply_text(f"Kết quả dự đoán: {predictions}")
 
 def main():
-    updater = Updater("YOUR_API_KEY", use_context=True)  # Thay YOUR_API_KEY với API key của bạn
+    updater = Updater("7755708665:AAFkF8i1eyoEHH83pL7lP2Vu1gnLluqaCYg", use_context=True)  # Thay YOUR_API_KEY với API key của bạn
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
