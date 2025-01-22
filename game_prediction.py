@@ -10,7 +10,7 @@ import sys
 import re
 import socket
 import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import traceback
 from queue import Queue
 
@@ -577,6 +577,7 @@ class TelegramIntegration:
 # --- Các hàm chính ---
 def main_loop():
     global bot
+    bot = None
     data_acquisition = DataAcquisition()
     data_processing = DataProcessing()
     model_training = ModelTraining()
@@ -607,52 +608,61 @@ def main_loop():
                 programming_learning.start_learning_programming()
 
             if not config.get("telegram_enabled", False):
+                 # If Telegram is not enabled, exit the loop as no user input is possible in this case
+                log("Telegram not enabled, exiting main loop")
+                break
+            
+            try:
                 user_input = input("Bạn: ")
-                if user_input.lower() == "thoát":
-                    log("AI đã thoát.")
-                    break
-                elif user_input.lower() == "bật telegram":
-                    config["telegram_enabled"] = True
-                    save_config(config)
-                    if telegram_integration.start_bot(TELEGRAM_BOT_TOKEN):
-                        log("Telegram đã được bật.")
-                        bot = telegram_integration.bot
-                    else:
-                        config["telegram_enabled"] = False
-                        save_config(config)
-                        log("Không thể bật telegram")
-                elif user_input.lower().startswith("chạy code:"):
-                    code = user_input[len("chạy code:"):].strip()
-                    log(f"Code nhận được: {code}")
-                    result = code_execution.execute_code(code)
-                    if result:
-                        print(f"Kết quả code:\n{result}")
-                elif user_input.lower().startswith("chạy lệnh:"):
-                    command = user_input[len("chạy lệnh:"):].strip()
-                    log(f"Lệnh nhận được: {command}")
-                    result = code_execution.run_command(command)
-                    if result:
-                        print(f"Kết quả lệnh:\n{result}")
-                elif user_input.lower().startswith("tìm kiếm:"):
-                    query = user_input[len("tìm kiếm:"):].strip()
-                    log(f"Tìm kiếm: {query}")
-                    search_results = data_acquisition.search_google(query)
-                    if search_results:
-                        print("Kết quả tìm kiếm:")
-                        for result in search_results:
-                            print(f"- {result}")
-
-                        texts = data_acquisition.scrape_text_from_urls(search_results[:5])
-                        if texts:
-                            tokenized_texts = data_processing.process_text_data(texts)
-                            model_training.update_model(tokenized_texts)
-                            log("Model đã được cập nhật từ kết quả tìm kiếm")
-                    else:
-                        print("Không tìm thấy kết quả tìm kiếm")
-
+            except EOFError:
+                log("EOF received, exiting main loop")
+                break # Exit the loop when an EOFError is caught
+                
+            if user_input.lower() == "thoát":
+                log("AI đã thoát.")
+                break
+            elif user_input.lower() == "bật telegram":
+                config["telegram_enabled"] = True
+                save_config(config)
+                if telegram_integration.start_bot(TELEGRAM_BOT_TOKEN):
+                    log("Telegram đã được bật.")
+                    bot = telegram_integration.bot
                 else:
-                    response = model_training.generate_text(user_input)
-                    print(f"AI: {response}")
+                    config["telegram_enabled"] = False
+                    save_config(config)
+                    log("Không thể bật telegram")
+            elif user_input.lower().startswith("chạy code:"):
+                code = user_input[len("chạy code:"):].strip()
+                log(f"Code nhận được: {code}")
+                result = code_execution.execute_code(code)
+                if result:
+                    print(f"Kết quả code:\n{result}")
+            elif user_input.lower().startswith("chạy lệnh:"):
+                command = user_input[len("chạy lệnh:"):].strip()
+                log(f"Lệnh nhận được: {command}")
+                result = code_execution.run_command(command)
+                if result:
+                    print(f"Kết quả lệnh:\n{result}")
+            elif user_input.lower().startswith("tìm kiếm:"):
+                query = user_input[len("tìm kiếm:"):].strip()
+                log(f"Tìm kiếm: {query}")
+                search_results = data_acquisition.search_google(query)
+                if search_results:
+                    print("Kết quả tìm kiếm:")
+                    for result in search_results:
+                        print(f"- {result}")
+
+                    texts = data_acquisition.scrape_text_from_urls(search_results[:5])
+                    if texts:
+                        tokenized_texts = data_processing.process_text_data(texts)
+                        model_training.update_model(tokenized_texts)
+                        log("Model đã được cập nhật từ kết quả tìm kiếm")
+                else:
+                    print("Không tìm thấy kết quả tìm kiếm")
+
+            else:
+                response = model_training.generate_text(user_input)
+                print(f"AI: {response}")
     except KeyboardInterrupt:
         log("AI đã dừng do người dùng ngắt.")
     except Exception as e:
