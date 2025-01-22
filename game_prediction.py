@@ -190,9 +190,10 @@ class TelegramBot:
     async def run(self):
         logging.info("Bot telegram đã khởi động...")
         await self.application.run_polling()
-        
+
+
 def main():
-    telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"  # Thay thế bằng token bot telegram của bạn
+    telegram_token = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"  # Thay thế bằng token bot telegram của bạn
     message_template = "This is a message sent by bot {random_string}"  # Template tin nhắn, có thể tùy chỉnh
     concurrent_requests = 20  # Số lượng request đồng thời
     spammer = NGLSpammer(message_template, concurrent_requests)
