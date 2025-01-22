@@ -158,7 +158,7 @@ class TelegramBot:
              self.spam_progress[chat_id]["current_count"] = success_count
              total_messages = self.spam_progress[chat_id]["total_messages"]
              percent =  (success_count / total_messages) * 100 if total_messages else 0
-             threading.Thread(target=asyncio.run, args=(self.bot.send_message(chat_id=chat_id, text=f"Tiến độ spam: {success_count}/{total_messages} ({percent:.2f}%)"),)).start()
+             asyncio.run(self.bot.send_message(chat_id=chat_id, text=f"Tiến độ spam: {success_count}/{total_messages} ({percent:.2f}%)"))
       return callback
 
     async def spam_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -192,16 +192,12 @@ class TelegramBot:
         await self.application.run_polling()
         
 def main():
-    telegram_token = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"  # Thay thế bằng token bot telegram của bạn
+    telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"  # Thay thế bằng token bot telegram của bạn
     message_template = "This is a message sent by bot {random_string}"  # Template tin nhắn, có thể tùy chỉnh
     concurrent_requests = 20  # Số lượng request đồng thời
     spammer = NGLSpammer(message_template, concurrent_requests)
     bot = TelegramBot(telegram_token, spammer)
-    try:
-      threading.Thread(target=lambda: asyncio.run(bot.run())).start()
-    except Exception as e:
-        logging.error(f"Lỗi không mong muốn: {e}")
-
+    asyncio.run(bot.run())
 
 if __name__ == "__main__":
     main()
