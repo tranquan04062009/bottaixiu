@@ -25,8 +25,8 @@ LOG_FILE = os.path.join(DATA_DIRECTORY, "ai_log.txt")
 ERROR_LOG_FILE = os.path.join(DATA_DIRECTORY, "ai_error_log.txt")
 CONFIG_FILE = os.path.join(DATA_DIRECTORY, "ai_config.json")
 CACHE_DIRECTORY = os.path.join(DATA_DIRECTORY, "cache")
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Cần thay thế bằng token của bot
-TELEGRAM_ADMIN_ID = 0  # Thay thế bằng admin ID
+TELEGRAM_BOT_TOKEN = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"  # Cần thay thế bằng token của bot
+TELEGRAM_ADMIN_ID = 6940071938  # Thay thế bằng admin ID
 MESSAGE_QUEUE_MAX_SIZE = 100
 
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
