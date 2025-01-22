@@ -9,6 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 import threading
 import os
 import platform
+import asyncio
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,7 +18,6 @@ class NGLSpammer:
     def __init__(self, message_template, concurrent_requests):
         self.message_template = message_template
         self.concurrent_requests = concurrent_requests
-        self.session = aiohttp.ClientSession()
         self.executor = ThreadPoolExecutor(max_workers=concurrent_requests)
         self.headers = {
             "Accept": "application/json, text/plain, */*",
@@ -70,7 +70,7 @@ class NGLSpammer:
         else:
             return "Mozilla/5.0 (Unknown) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    async def _send_message(self, target_user_id, message_content):
+    async def _send_message(self, target_user_id, message_content, session):
         url = "https://ngl.link/api/submit"
         device_id = self._generate_random_string(32)
         payload = {
@@ -82,7 +82,7 @@ class NGLSpammer:
         headers_copy = self.headers.copy()
         headers_copy["User-Agent"] = self._generate_user_agent()
         try:
-            async with self.session.post(url, headers=headers_copy, json=payload) as response:
+            async with session.post(url, headers=headers_copy, json=payload) as response:
                 response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 response_json = await response.json()
                 with self.lock:
@@ -99,19 +99,23 @@ class NGLSpammer:
 
     def _send_messages_sync(self, target_user_id, num_messages, update_callback):
          self.success_count = 0
-         for i in range(num_messages):
-            message = self.message_template.format(random_string=self._generate_random_string(10))
-            asyncio.run(self._send_message(target_user_id, message))
-            with self.lock:
-              update_callback(self.success_count)
-    
+         async def send_messages_async():
+           async with aiohttp.ClientSession() as session:
+             for i in range(num_messages):
+                message = self.message_template.format(random_string=self._generate_random_string(10))
+                await self._send_message(target_user_id, message, session)
+                with self.lock:
+                    update_callback(self.success_count)
+         asyncio.run(send_messages_async())
+
+
     def start_spamming(self, target_user_id, num_messages, update_callback):
         logging.info(f"Bắt đầu spam tin nhắn tới {target_user_id} với {num_messages} tin nhắn.")
         start_time = time.time()
         self._send_messages_sync(target_user_id, num_messages, update_callback)
         elapsed_time = time.time() - start_time
         logging.info(f"Hoàn thành spam. Tổng thời gian: {elapsed_time:.2f} giây. Tổng tin nhắn thành công: {self.success_count}")
-
+    
 
     async def close(self):
         await self.session.close()
