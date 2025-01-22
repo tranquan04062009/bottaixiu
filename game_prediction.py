@@ -18,13 +18,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Telegram Bot Token not found in environment variables. Please set TELEGRAM_BOT_TOKEN.")
-    
+
 class NGLSpammer:
     def __init__(self, target_user_id: str, num_messages: int, bot: telegram.Bot = None, chat_id: int = None):
         """
         Initializes the NGL spammer with target user ID, number of messages, and optional Telegram bot for logging.
         Removed proxy functionality.
-
+        
         Args:
             target_user_id (str): The ID of the target NGL user.
             num_messages (int): The number of messages to send.
@@ -48,14 +48,15 @@ class NGLSpammer:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-ngl-csrf-token": self._generate_csrf_token()
         }
         self.base_url = "https://ngl.link/api/submit"
         self.session = aiohttp.ClientSession(headers=self.headers)
         self.executor = ThreadPoolExecutor(max_workers=50)
         self.sent_count = 0
-    
+        self.error_count = 0  # Track the number of 400 errors
+
     def _generate_csrf_token(self) -> str:
         """
         Generates a random string to be used as a CSRF token.
@@ -78,22 +79,23 @@ class NGLSpammer:
             "deviceId": self._generate_device_id(),
             "gameSlug": None
         }
+    
     def _generate_device_id(self) -> str:
-          """
-            Generates a random device ID using the uuid.uuid4 format.
-
-            Returns:
-                str: A random device ID.
-          """
-          return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(32))
-
-
-    async def _send_message(self, session: aiohttp.ClientSession) -> None:
         """
-        Sends a single message to the target user.
+        Generates a random device ID using the uuid.uuid4 format.
+
+        Returns:
+            str: A random device ID.
+        """
+        return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(32))
+
+    async def _send_message(self, session: aiohttp.ClientSession, retry: int = 3) -> None:
+        """
+        Sends a single message to the target user with retry logic for 400 errors.
 
         Args:
             session (aiohttp.ClientSession): The aiohttp session.
+             retry (int): Number of retries.
         """
         try:
             async with session.post(
@@ -115,6 +117,20 @@ class NGLSpammer:
                     logging.warning(log_message)
                     if self.bot and self.chat_id:
                         await self.bot.send_message(chat_id=self.chat_id, text=log_message)
+        except aiohttp.ClientResponseError as e:
+          if e.status == 400 and retry > 0:
+              self.error_count += 1
+              log_message = f"Aiohttp client error 400, retrying... ({retry} retries left) Error count: {self.error_count}"
+              logging.warning(log_message)
+              if self.bot and self.chat_id:
+                  await self.bot.send_message(chat_id=self.chat_id, text=log_message)
+                  await asyncio.sleep(1) # Add a small delay before retrying
+              await self._send_message(session, retry=retry - 1) # Recursive retry
+          else:
+              log_message = f"Aiohttp client error: {e}"
+              logging.error(log_message)
+              if self.bot and self.chat_id:
+                  await self.bot.send_message(chat_id=self.chat_id, text=log_message)
         except aiohttp.ClientError as e:
             log_message = f"Aiohttp client error: {e}"
             logging.error(log_message)
@@ -130,7 +146,7 @@ class NGLSpammer:
             logging.error(log_message)
             if self.bot and self.chat_id:
                 await self.bot.send_message(chat_id=self.chat_id, text=log_message)
-    
+
     async def _spam_messages(self) -> None:
         """
         Spams the target user with messages.
@@ -139,34 +155,34 @@ class NGLSpammer:
         for i in range(self.num_messages):
             task = asyncio.ensure_future(self._send_message(self.session))
             tasks.append(task)
-            
+
             if i % 10 == 0:
                 await asyncio.sleep(0.1)
         await asyncio.gather(*tasks)
 
     async def run(self) -> None:
-         """
-            Runs the spammer.
         """
-         try:
-             log_message = "Starting NGL spammer..."
-             logging.info(log_message)
-             if self.bot and self.chat_id:
+        Runs the spammer.
+        """
+        try:
+            log_message = "Starting NGL spammer..."
+            logging.info(log_message)
+            if self.bot and self.chat_id:
+               await self.bot.send_message(chat_id=self.chat_id, text=log_message)
+            await self._spam_messages()
+        except Exception as e:
+            log_message = f"An error occurred during execution: {e}"
+            logging.error(log_message)
+            if self.bot and self.chat_id:
                 await self.bot.send_message(chat_id=self.chat_id, text=log_message)
-             await self._spam_messages()
-         except Exception as e:
-             log_message = f"An error occurred during execution: {e}"
-             logging.error(log_message)
-             if self.bot and self.chat_id:
-                await self.bot.send_message(chat_id=self.chat_id, text=log_message)
-         finally:
+        finally:
             await self.session.close()
             self.executor.shutdown(wait=True)
             log_message = "NGL spammer finished."
             logging.info(log_message)
             if self.bot and self.chat_id:
                await self.bot.send_message(chat_id=self.chat_id, text=log_message)
-    
+
 # Telegram bot handlers
 async def start_command(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -180,31 +196,30 @@ async def spam_command(update: telegram.Update, context: ContextTypes.DEFAULT_TY
      Extracts target user ID and number of messages, then calls the NGLSpammer to send spam
     """
     try:
-      args = context.args
-      if len(args) != 2:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /spam <user_id> <number_of_messages>")
-        return
-      
-      target_user_id = args[0]
-      num_messages = int(args[1])
-      
-      if num_messages <= 0:
-         await context.bot.send_message(chat_id=update.effective_chat.id, text="Number of messages must be greater than 0.")
-         return
-      
-      await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Starting spamming {target_user_id} with {num_messages} messages...")
-      
-      spammer = NGLSpammer(target_user_id, num_messages, bot=context.bot, chat_id=update.effective_chat.id)
-      await spammer.run()
-      
-      
+        args = context.args
+        if len(args) != 2:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /spam <user_id> <number_of_messages>")
+            return
+
+        target_user_id = args[0]
+        num_messages = int(args[1])
+
+        if num_messages <= 0:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Number of messages must be greater than 0.")
+            return
+
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Starting spamming {target_user_id} with {num_messages} messages...")
+
+        spammer = NGLSpammer(target_user_id, num_messages, bot=context.bot, chat_id=update.effective_chat.id)
+        await spammer.run()
+
 
     except ValueError:
-      await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid number of messages, please use a whole number")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid number of messages, please use a whole number")
     except Exception as e:
-       log_message = f"An error occurred in spam_command: {e}"
-       logging.error(log_message)
-       await context.bot.send_message(chat_id=update.effective_chat.id, text=f"An error occurred while processing the command: {e}")
+        log_message = f"An error occurred in spam_command: {e}"
+        logging.error(log_message)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"An error occurred while processing the command: {e}")
 
 
 async def help_command(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,12 +238,12 @@ async def unknown_command(update: telegram.Update, context: ContextTypes.DEFAULT
 # Main function to run the bot
 def main():
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
+
     # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("spam", spam_command))
     application.add_handler(CommandHandler("help", help_command))
-    
+
     # Message handler for unknown commands
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
