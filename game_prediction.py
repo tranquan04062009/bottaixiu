@@ -40,7 +40,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
 ]
 
-
 async def generate_device_id() -> str:
     """Generates a random device ID."""
     return "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(42))
@@ -62,11 +61,10 @@ async def send_message(
             headers = {
                 "User-Agent": random.choice(USER_AGENTS),
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-NGL-DEVICE-ID": device_id, # Add the device id in header for more realistic request
+                "X-NGL-DEVICE-ID": device_id,
                 "Origin": "https://ngl.link",
                 "Referer": "https://ngl.link/",
             }
-            # URL encode message
             encoded_message = quote(message)
             body = f"username={username}&question={encoded_message}&deviceId={device_id}&gameSlug=&referrer="
 
@@ -81,10 +79,11 @@ async def send_message(
                         await bot.send_message(
                             chat_id, f"Phiên {session_id}: Đã gửi {counter} tin nhắn."
                         )
-                    await asyncio.sleep(random.uniform(1, 3)) # Simulate real user pacing
+                    await asyncio.sleep(random.uniform(1, 3))
         except Exception as e:
             logging.error(f"[Lỗi] {e}")
             await asyncio.sleep(2)
+
 
 def is_blocked(chat_id: int) -> bool:
     """Checks if a user is blocked."""
@@ -143,6 +142,7 @@ async def handle_username_input(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         return
 
+
 async def handle_message_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the message input after the username input."""
     chat_id = update.effective_chat.id
@@ -152,12 +152,11 @@ async def handle_message_input(update: Update, context: ContextTypes.DEFAULT_TYP
     if "awaiting_message" in context.user_data and context.user_data["awaiting_message"] and username:
         del context.user_data["awaiting_message"]
         current_session_id = len(user_spam_sessions.get(chat_id, [])) + 1
-
         if chat_id not in user_spam_sessions:
              user_spam_sessions[chat_id] = []
-        user_spam_sessions[chat_id].append(
-            {"id": current_session_id, "username": username, "message": message, "isActive": True}
-        )
+        
+        session_data = {"id": current_session_id, "username": username, "message": message, "isActive": True}
+        user_spam_sessions[chat_id].append(session_data)
         asyncio.create_task(send_message(username, message, chat_id, current_session_id, context.bot))
         await context.bot.send_message(chat_id, f"Phiên spam {current_session_id} đã bắt đầu!")
     else:
@@ -179,11 +178,11 @@ async def handle_spam_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         list_message = "Danh sách các phiên spam hiện tại:\n"
         buttons = []
         for session in sessions:
-            list_message += (
+             list_message += (
                 f"{session['id']}: {session['username']} - {session['message']} "
                 f"[Hoạt động: {session['isActive']}]\n"
             )
-            buttons.append(
+             buttons.append(
                 [{"text": f"Dừng phiên {session['id']}", "callback_data": f"stop_{session['id']}"}]
             )
         await context.bot.send_message(
@@ -200,7 +199,7 @@ async def stop_spam_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat.id
     session_id = int(query.data.split("_")[1])
-    await query.answer() # Acknowledge the callback
+    await query.answer()
 
     sessions = user_spam_sessions.get(chat_id, [])
     for session in sessions:
@@ -225,9 +224,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex("Danh sách Spam"), handle_spam_list))
     application.add_handler(CallbackQueryHandler(stop_spam_session, pattern="^stop_"))
 
-
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
