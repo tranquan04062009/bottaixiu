@@ -10,12 +10,16 @@ import sys
 import re
 import socket
 import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
 import traceback
 from queue import Queue
+import asyncio
+from datetime import datetime
+from collections import defaultdict
 
 # --- Cấu hình ban đầu ---
-VERSION = "1.3"
+VERSION = "1.4"
 MODEL_ID = hashlib.sha256(os.urandom(32)).hexdigest()
 INITIAL_LEARNING_RATE = 0.001
 MAX_THREADS = 32
@@ -28,25 +32,30 @@ CACHE_DIRECTORY = os.path.join(DATA_DIRECTORY, "cache")
 TELEGRAM_BOT_TOKEN = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"  # Cần thay thế bằng token của bot
 TELEGRAM_ADMIN_ID = 6940071938  # Thay thế bằng admin ID
 MESSAGE_QUEUE_MAX_SIZE = 100
+LEARNING_INTERVAL = 30  # Thời gian giữa các lần tự học (giây)
+MAX_SEARCH_RESULTS = 5
 
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
 os.makedirs(CACHE_DIRECTORY, exist_ok=True)
 
 def log(message):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {message}\n")
     print(message)
 
 def error_log(message):
-    with open(ERROR_LOG_FILE, "a") as f:
-        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {message}\n")
     print(f"ERROR: {message}")
     try:
         global bot  # Khai báo global để truy cập biến bot
         if bot and TELEGRAM_ADMIN_ID:
-            bot.send_message(chat_id=TELEGRAM_ADMIN_ID, text=f"ERROR: {message}")
+            asyncio.run(bot.send_message(chat_id=TELEGRAM_ADMIN_ID, text=f"ERROR: {message}"))
     except Exception as e:
         print(f"Lỗi khi gửi thông báo lỗi: {e}")
+
 
 def load_config():
     try:
@@ -58,16 +67,18 @@ def load_config():
             "last_updated": time.time(),
             "version": VERSION,
             "telegram_enabled": False,
-            "last_model_size": 0  # Khởi tạo last_model_size
+            "last_model_size": 0,  # Khởi tạo last_model_size
+            "last_learning": 0
         }
     except json.JSONDecodeError as e:
         error_log(f"Lỗi khi giải mã file cấu hình JSON: {e}. Sử dụng cấu hình mặc định.")
         return {
-            "learning_rate": INITIAL_LEARNING_RATE,
+             "learning_rate": INITIAL_LEARNING_RATE,
             "last_updated": time.time(),
             "version": VERSION,
             "telegram_enabled": False,
-            "last_model_size": 0
+            "last_model_size": 0,
+            "last_learning": 0
         }
     except Exception as e:
         error_log(f"Lỗi khi tải cấu hình: {e}. Sử dụng cấu hình mặc định.")
@@ -76,7 +87,8 @@ def load_config():
             "last_updated": time.time(),
             "version": VERSION,
             "telegram_enabled": False,
-            "last_model_size": 0
+            "last_model_size": 0,
+            "last_learning": 0
         }
 
 def save_config(config):
@@ -124,14 +136,14 @@ class DataAcquisition:
                 return data
             return None
 
-    def search_google(self, query):
+    def search_google(self, query, num_results=MAX_SEARCH_RESULTS):
         search_url = f"https://www.google.com/search?q={query}"
         content = self.fetch_cached(search_url)
         if not content:
             return []
         urls = re.findall(r'href="([^"]+)"', content)
         filtered_urls = [u for u in urls if u.startswith("http") and not u.startswith("https://www.google.com")]
-        return filtered_urls
+        return filtered_urls[:num_results]
 
     def scrape_text_from_urls(self, urls):
         texts = []
@@ -208,21 +220,16 @@ class DataProcessing:
 
 class ModelTraining:
     def __init__(self):
-        self.model = {}
+        self.model = defaultdict(lambda: defaultdict(int)) # Changed to defaultdict for ease of use
 
     def update_model(self, tokenized_texts):
-      if not tokenized_texts:
-        return
-      for tokens in tokenized_texts:
-          for i, token in enumerate(tokens):
-              if token not in self.model:
-                  self.model[token] = {}
-
-              if i < len(tokens) - 1:
-                  next_token = tokens[i + 1]
-                  if next_token not in self.model[token]:
-                      self.model[token][next_token] = 0
-                  self.model[token][next_token] += 1
+        if not tokenized_texts:
+            return
+        for tokens in tokenized_texts:
+            for i, token in enumerate(tokens):
+                if i < len(tokens) - 1:
+                    next_token = tokens[i + 1]
+                    self.model[token][next_token] += 1
 
     def generate_text(self, seed=""):
         current = seed
@@ -233,27 +240,24 @@ class ModelTraining:
             next_tokens = self.model[current]
             if not next_tokens:
                 break
-
+            
             total = sum(next_tokens.values())
             if total <= 0:
                 break
             rand = random.randint(0, total - 1)
-
             cumulative = 0
-
             for token, count in next_tokens.items():
                 cumulative += count
                 if rand < cumulative:
-                    current = token
-                    output.append(token)
-                    break
-
+                   current = token
+                   output.append(token)
+                   break
         return " ".join(output)
 
     def save_model(self):
         try:
             model_file = os.path.join(DATA_DIRECTORY, "ai_model.json")
-            with open(model_file, "w") as f:
+            with open(model_file, "w", encoding="utf-8") as f:
                 json.dump(self.model, f, indent=4)
             log("Model đã được lưu")
         except Exception as e:
@@ -262,8 +266,8 @@ class ModelTraining:
     def load_model(self):
         try:
             model_file = os.path.join(DATA_DIRECTORY, "ai_model.json")
-            with open(model_file, "r") as f:
-                self.model = json.load(f)
+            with open(model_file, "r", encoding="utf-8") as f:
+                self.model = defaultdict(lambda: defaultdict(int), json.load(f))
             log("Model đã được tải")
         except FileNotFoundError:
             log("Không tìm thấy model, sẽ tạo model mới")
@@ -348,6 +352,7 @@ class SelfImprovement:
         self.model_training.save_model()
 
         log("Quá trình tự cải thiện hoàn tất.")
+
 
 class CodeExecution:
     def __init__(self):
@@ -466,28 +471,31 @@ class ProgrammingLearning:
 
 
 class TelegramIntegration:
-    def __init__(self, model_training, code_execution, data_acquisition):
+    def __init__(self, model_training, code_execution, data_acquisition, self_improvement, data_processing):
         self.model_training = model_training
         self.code_execution = code_execution
         self.data_acquisition = data_acquisition
-        self.updater = None
+        self.self_improvement = self_improvement
+        self.data_processing = data_processing
+        self.application = None
         self.bot = None
         self.message_queue = Queue(maxsize=MESSAGE_QUEUE_MAX_SIZE)
         self.processing_thread = None
         self.stop_processing = False
+        self.last_learning = time.time()
+        
 
-    def start_bot(self, token):
+    async def start_bot(self, token):
         try:
-            self.bot = telegram.Bot(token=token)
-            self.updater = Updater(token=token, use_context=True)
+            self.application = Application.builder().token(token).build()
+            self.bot = self.application.bot
 
-            dp = self.updater.dispatcher
+            self.application.add_handler(CommandHandler("start", self.start_command))
+            self.application.add_handler(CommandHandler("help", self.help_command))
+            self.application.add_handler(MessageHandler(filters.TEXT, self.handle_message))
 
-            dp.add_handler(CommandHandler("start", self.start_command))
-            dp.add_handler(CommandHandler("help", self.help_command))
-            dp.add_handler(MessageHandler(Filters.text, self.handle_message))
 
-            self.updater.start_polling()
+            await self.application.start_polling()
             log("Telegram bot đã được khởi động.")
             self.processing_thread = threading.Thread(target=self._process_messages)
             self.stop_processing = False
@@ -500,27 +508,27 @@ class TelegramIntegration:
             return False
         return True
 
-    def stop_bot(self):
-        if self.updater:
+    async def stop_bot(self):
+        if self.application:
             self.stop_processing = True
             if self.processing_thread and self.processing_thread.is_alive():
                 self.processing_thread.join()
-            self.updater.stop()
+            await self.application.stop()
             log("Telegram bot đã dừng.")
 
-    def start_command(self, update, context):
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Xin chào! Tôi là AI tự học. Hãy nhập tin nhắn để trò chuyện với tôi.")
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Xin chào! Tôi là AI tự học. Hãy nhập tin nhắn để trò chuyện với tôi.")
 
-    def help_command(self, update, context):
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Tôi có thể trả lời các câu hỏi, chạy code python, và thực hiện lệnh.")
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Tôi có thể trả lời các câu hỏi, chạy code python, và thực hiện lệnh.")
 
-    def handle_message(self, update, context):
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if not self.message_queue.full():
                 self.message_queue.put((update, context))
             else:
                 log(f"Telegram: Message queue is full. Dropping message from user {update.effective_chat.id}")
-                context.bot.send_message(chat_id=update.effective_chat.id, text="Xin lỗi, tôi đang bận xử lý tin nhắn khác. Hãy thử lại sau.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="Xin lỗi, tôi đang bận xử lý tin nhắn khác. Hãy thử lại sau.")
         except Exception as e:
             error_log(f"Lỗi khi thêm message vào queue {e}")
 
@@ -537,43 +545,67 @@ class TelegramIntegration:
                         log(f"Telegram: Nhận code: {code}")
                         result = self.code_execution.execute_code(code)
                         if result:
-                            context.bot.send_message(chat_id=update.effective_chat.id, text=f"Kết quả code:\n{result}")
+                            asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text=f"Kết quả code:\n{result}"))
                         else:
-                            context.bot.send_message(chat_id=update.effective_chat.id, text="Lỗi khi chạy code.")
+                             asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text="Lỗi khi chạy code."))
                     elif user_input.lower().startswith("chạy lệnh:"):
                         command = user_input[len("chạy lệnh:"):].strip()
                         log(f"Telegram: Nhận lệnh: {command}")
                         result = self.code_execution.run_command(command)
                         if result:
-                            context.bot.send_message(chat_id=update.effective_chat.id, text=f"Kết quả lệnh:\n{result}")
+                            asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text=f"Kết quả lệnh:\n{result}"))
                         else:
-                            context.bot.send_message(chat_id=update.effective_chat.id, text="Lỗi khi chạy lệnh.")
+                           asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text="Lỗi khi chạy lệnh."))
                     elif user_input.lower().startswith("tìm kiếm:"):
-                        query = user_input[len("tìm kiếm:"):].strip()
-                        log(f"Telegram: Tìm kiếm: {query}")
-                        search_results = self.data_acquisition.search_google(query)
-                        if search_results:
-                            message_text = "Kết quả tìm kiếm:\n"
-                            for result in search_results:
-                                message_text += f"- {result}\n"
-                            context.bot.send_message(chat_id=update.effective_chat.id, text=message_text)
+                         query = user_input[len("tìm kiếm:"):].strip()
+                         log(f"Telegram: Tìm kiếm: {query}")
+                         search_results = self.data_acquisition.search_google(query)
+                         if search_results:
+                             message_text = "Kết quả tìm kiếm:\n"
+                             for result in search_results:
+                                 message_text += f"- {result}\n"
+                             asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text=message_text))
 
-                            texts = self.data_acquisition.scrape_text_from_urls(search_results[:5])
-                            if texts:
-                                tokenized_texts = data_processing.process_text_data(texts)
-                                model_training.update_model(tokenized_texts)
-                                log("Model đã được cập nhật từ kết quả tìm kiếm trên telegram")
-                        else:
-                            context.bot.send_message(chat_id=update.effective_chat.id, text="Không tìm thấy kết quả tìm kiếm")
+                             texts = self.data_acquisition.scrape_text_from_urls(search_results)
+                             if texts:
+                                 tokenized_texts = self.data_processing.process_text_data(texts)
+                                 self.model_training.update_model(tokenized_texts)
+                                 log("Model đã được cập nhật từ kết quả tìm kiếm trên telegram")
+                         else:
+                             asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text="Không tìm thấy kết quả tìm kiếm"))
                     else:
+                        # Adaptive Learning Logic
                         response = self.model_training.generate_text(user_input)
-                        context.bot.send_message(chat_id=update.effective_chat.id, text=f"AI: {response}")
+                        asyncio.run(context.bot.send_message(chat_id=update.effective_chat.id, text=f"AI: {response}"))
+
+                        # Check if enough time has passed for adaptive learning
+                        if time.time() - self.last_learning > LEARNING_INTERVAL:
+                            log("Bắt đầu học từ tin nhắn người dùng.")
+                            self.last_learning = time.time()
+                            
+                            # Trigger self-improvement with user input as seed
+                            seed_urls = self.data_acquisition.search_google(user_input, num_results=2)  # Search with the query itself
+                            if seed_urls:
+                                texts = self.data_acquisition.scrape_text_from_urls(seed_urls)
+                                if texts:
+                                    tokenized_texts = self.data_processing.process_text_data(texts)
+                                    self.model_training.update_model(tokenized_texts)
+                                    log("Model đã được cập nhật từ kết quả tìm kiếm từ câu hỏi")
+                                else:
+                                     log("Không tìm thấy dữ liệu từ seed url")
+                            else:
+                                 log("Không tìm thấy seed url để học từ câu hỏi")
+                            config["last_learning"] = self.last_learning
+                            save_config(config)
+                        else:
+                            log("Chưa đủ thời gian cho lần học tiếp theo")
                     self.message_queue.task_done()
                 else:
                    time.sleep(0.1)
             except Exception as e:
                 error_log(f"Lỗi trong message processing: {e}\n{traceback.format_exc()}")
-                
+
+
 # --- Các hàm chính ---
 def main_loop():
     global bot
@@ -584,7 +616,7 @@ def main_loop():
     code_execution = CodeExecution()
     self_improvement = SelfImprovement(data_acquisition, data_processing, model_training)
     programming_learning = ProgrammingLearning(data_acquisition, data_processing, model_training, code_execution)
-    telegram_integration = TelegramIntegration(model_training, code_execution, data_acquisition)
+    telegram_integration = TelegramIntegration(model_training, code_execution, data_acquisition, self_improvement, data_processing)
 
     model_training.load_model()
 
@@ -592,7 +624,7 @@ def main_loop():
 
     if config.get("telegram_enabled", False):
         log("Telegram bot đang được bật.")
-        if not telegram_integration.start_bot(TELEGRAM_BOT_TOKEN):
+        if not asyncio.run(telegram_integration.start_bot(TELEGRAM_BOT_TOKEN)):
             config["telegram_enabled"] = False
             save_config(config)
             log("Tắt telegram bot do lỗi.")
@@ -606,6 +638,8 @@ def main_loop():
                 seed_urls = ["https://en.wikipedia.org/wiki/Main_Page", "https://vnexpress.net"]
                 self_improvement.self_improve(seed_urls, 25, 2)  # Giới hạn url và độ sâu
                 programming_learning.start_learning_programming()
+                config["last_updated"] = time.time()
+                save_config(config)
 
             if not config.get("telegram_enabled", False):
                  # If Telegram is not enabled, exit the loop as no user input is possible in this case
@@ -624,7 +658,7 @@ def main_loop():
             elif user_input.lower() == "bật telegram":
                 config["telegram_enabled"] = True
                 save_config(config)
-                if telegram_integration.start_bot(TELEGRAM_BOT_TOKEN):
+                if asyncio.run(telegram_integration.start_bot(TELEGRAM_BOT_TOKEN)):
                     log("Telegram đã được bật.")
                     bot = telegram_integration.bot
                 else:
@@ -659,16 +693,18 @@ def main_loop():
                         log("Model đã được cập nhật từ kết quả tìm kiếm")
                 else:
                     print("Không tìm thấy kết quả tìm kiếm")
-
+            
             else:
                 response = model_training.generate_text(user_input)
                 print(f"AI: {response}")
+                
     except KeyboardInterrupt:
         log("AI đã dừng do người dùng ngắt.")
     except Exception as e:
         error_log(f"Lỗi: {e}\n{traceback.format_exc()}")
     finally:
-        telegram_integration.stop_bot()
+         if telegram_integration.application:
+            asyncio.run(telegram_integration.stop_bot())
 
 if __name__ == "__main__":
     main_loop()
