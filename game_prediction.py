@@ -4,6 +4,7 @@ import aiohttp
 import logging
 import random
 import string
+import secrets
 
 from telegram import Bot, Update
 from telegram.ext import (
@@ -14,7 +15,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from typing import Dict, List
+from typing import Dict, List, Optional
+from urllib.parse import quote
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -27,6 +29,16 @@ if not TOKEN:
 
 user_spam_sessions: Dict[int, List[Dict]] = {}
 blocked_users: List[int] = []
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Android 10; Mobile; rv:119.0) Gecko/119.0 Firefox/119.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+]
 
 
 async def generate_device_id() -> str:
@@ -48,15 +60,20 @@ async def send_message(
             device_id = await generate_device_id()
             url = "https://ngl.link/api/submit"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0",
+                "User-Agent": random.choice(USER_AGENTS),
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-NGL-DEVICE-ID": device_id, # Add the device id in header for more realistic request
+                "Origin": "https://ngl.link",
+                "Referer": "https://ngl.link/",
             }
-            body = f"username={username}&question={message}&deviceId={device_id}&gameSlug=&referrer="
+            # URL encode message
+            encoded_message = quote(message)
+            body = f"username={username}&question={encoded_message}&deviceId={device_id}&gameSlug=&referrer="
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, data=body) as response:
                     if response.status != 200:
-                        logging.info("[Lỗi] Bị giới hạn, đang chờ 5 giây...")
+                        logging.info(f"[Lỗi] Bị giới hạn, status code: {response.status}, đang chờ 5 giây...")
                         await asyncio.sleep(5)
                     else:
                         counter += 1
@@ -64,23 +81,18 @@ async def send_message(
                         await bot.send_message(
                             chat_id, f"Phiên {session_id}: Đã gửi {counter} tin nhắn."
                         )
-
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(random.uniform(1, 3)) # Simulate real user pacing
         except Exception as e:
             logging.error(f"[Lỗi] {e}")
             await asyncio.sleep(2)
-
 
 def is_blocked(chat_id: int) -> bool:
     """Checks if a user is blocked."""
     return chat_id in blocked_users
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command."""
     chat_id = update.effective_chat.id
-    username = update.effective_user.username or "Không có tên người dùng"
-    first_name = update.effective_user.first_name or "Không có tên"
     user_id = update.effective_user.id
 
     if is_blocked(chat_id):
@@ -130,7 +142,6 @@ async def handle_username_input(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data["awaiting_message"] = True  # Set the flag to wait for message
     else:
         return
-
 
 async def handle_message_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the message input after the username input."""
@@ -183,6 +194,7 @@ async def handle_spam_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await context.bot.send_message(chat_id, "Không có phiên spam nào đang hoạt động.")
 
+
 async def stop_spam_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the stop spam session callback query."""
     query = update.callback_query
@@ -201,7 +213,6 @@ async def stop_spam_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id, f"Không tìm thấy phiên spam với ID {session_id}."
     )
-
 
 def main() -> None:
     """Starts the bot."""
