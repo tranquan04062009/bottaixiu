@@ -11,7 +11,7 @@ import asyncio
 import os
 
 # Configuration
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")  # Get from env var, default
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN")  # Get from env var, default
 MAX_LIKES_PER_USER = int(os.environ.get("MAX_LIKES_PER_USER", 50))
 API_HOST = os.environ.get("API_HOST", '0.0.0.0')
 API_PORT = int(os.environ.get("API_PORT", 5000))
