@@ -10,11 +10,11 @@ import logging
 import asyncio
 import os
 
-# Configuration
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN")  # Get from env var, default
-MAX_LIKES_PER_USER = int(os.environ.get("MAX_LIKES_PER_USER", 50))
-API_HOST = os.environ.get("API_HOST", '0.0.0.0')
-API_PORT = int(os.environ.get("API_PORT", 5000))
+# Configuration - Hardcoded
+TELEGRAM_TOKEN = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"  # Replace with your Telegram Bot Token
+MAX_LIKES_PER_USER = 50
+API_HOST = '0.0.0.0'
+API_PORT = 5000
 API_BASE_URL = f'http://{API_HOST}:{API_PORT}'
 
 # API Class
@@ -140,8 +140,9 @@ class API:
             with self.data_lock:
                 return jsonify(self.leaderboard[leaderboard_type])
     
-    def run(self, host='0.0.0.0', port=5000, debug=False):  # debug=False for production use
+    def run(self, host='0.0.0.0', port=5000, debug=False):
        self.app.run(host=host, port=port, debug=debug)
+
 
 # Telegram Bot Class
 class TelegramBot:
@@ -167,31 +168,26 @@ class TelegramBot:
         await update.message.reply_text("Sử dụng lệnh /like <số lượng> <id game> để tăng like. Ví dụ: /like 10 123456")
 
     async def _make_api_request(self, method, url, data=None):
-          try:
+        try:
             headers = {'Content-Type': 'application/json'}
-            async with asyncio.Lock():
-              if method == "GET":
-                  loop = asyncio.get_event_loop()
-                  response = await loop.run_in_executor(None, requests.get, url, headers=headers)
-                  response.raise_for_status()
-                  return response.json()
-              elif method == "POST":
-                  loop = asyncio.get_event_loop()
-                  response = await loop.run_in_executor(None, requests.post, url, headers=headers, data=json.dumps(data))
-                  response.raise_for_status()
-                  return response.json()
-              else:
-                  raise ValueError(f"Method {method} is not supported.")
-
-          except requests.exceptions.RequestException as e:
-              self.logger.error(f"Error during API request: {e}")
-              return None
-          except ValueError as e:
-              self.logger.error(f"Value Error during API request {e}")
-              return None
-          except Exception as e:
-              self.logger.error(f"An unexpected error occurred: {e}")
-              return None
+            loop = asyncio.get_event_loop()
+            if method == "GET":
+                response = await loop.run_in_executor(None, requests.get, url, headers=headers)
+            elif method == "POST":
+                response = await loop.run_in_executor(None, requests.post, url, headers=headers, data=json.dumps(data))
+            else:
+                raise ValueError(f"Method {method} is not supported.")
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error during API request: {e}")
+            return None
+        except ValueError as e:
+            self.logger.error(f"Value Error during API request {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred: {e}")
+            return None
 
     def _generate_random_data(self):
         return {
@@ -248,14 +244,16 @@ class TelegramBot:
     def run(self):
         self.application.run_polling()
 
+
 # Main function
 def main():
     api_instance = API()
     # Run Flask in main thread and disable debug
     api_instance.run(host=API_HOST, port=API_PORT, debug=False)
-    
+
     bot_instance = TelegramBot(TELEGRAM_TOKEN, API_BASE_URL, MAX_LIKES_PER_USER)
     bot_instance.run()
+
 
 if __name__ == '__main__':
     main()
