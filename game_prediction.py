@@ -1,24 +1,33 @@
-import sys
+import logging
 import os
 import requests
 import threading
 import time
 import json
-import telebot
-from telebot import types
+import asyncio
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from requests.exceptions import RequestException
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"
-SHARE_COMMAND = "/share"
-START_COMMAND = "/start"
-HELP_COMMAND = "/help"
-STOP_COMMAND = "/stop"
-STATUS_COMMAND = "/status"
+SHARE_COMMAND = "share"
+START_COMMAND = "start"
+HELP_COMMAND = "help"
+STOP_COMMAND = "stop"
+STATUS_COMMAND = "status"
 
 SHARE_IN_PROGRESS = {}  # Track shares in progress per user
 ACTIVE_THREADS = {}  # Track active threads per user
-STOP_REQUESTED = {} # Track user stop requests
-SHARE_COUNT = {}    # Track share count per user
+STOP_REQUESTED = {}  # Track user stop requests
+SHARE_COUNT = {}  # Track share count per user
+MAX_RETRIES = 3 # Set maximum retries for requests
 
 
 # --- TOKEN EXTRACTION ---
@@ -51,11 +60,12 @@ def get_token(input_file):
             pass
     return gome_token
 
+
 # --- SHARE FUNCTION ---
-def share(tach, id_share, bot, message, delay_time):
-    user_id = message.from_user.id
+async def share(tach, id_share, context, delay_time):
+    user_id = context._user_id
     if user_id not in ACTIVE_THREADS:
-         ACTIVE_THREADS[user_id] = {'status':'started'}
+        ACTIVE_THREADS[user_id] = {'status': 'started'}
 
     cookie = tach.split('|')[0]
     token = tach.split('|')[1]
@@ -67,160 +77,193 @@ def share(tach, id_share, bot, message, delay_time):
         'cookie': cookie,
         'host': 'graph.facebook.com'
     }
+    retries = 0
+    while retries < MAX_RETRIES:
+        try:
+             if STOP_REQUESTED.get(user_id, False):
+                return
+             response = requests.post(f'https://graph.facebook.com/me/feed?link=https://m.facebook.com/{id_share}&published=0&access_token={token}', headers=headers, timeout=10)
+             response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
 
-    try:
-        if STOP_REQUESTED.get(user_id, False):
-            return
-        response = requests.post(f'https://graph.facebook.com/me/feed?link=https://m.facebook.com/{id_share}&published=0&access_token={token}', headers=headers)
-        if response.status_code == 200:
-             SHARE_COUNT[user_id] = SHARE_COUNT.get(user_id,0) + 1
-             bot.send_message(message.chat.id, f'Share thành công: {id_share}, Số lần: {SHARE_COUNT[user_id]}')
-        else :
-           bot.send_message(message.chat.id, f"Lỗi share: Status code {response.status_code}")
+             if response.status_code == 200:
+                SHARE_COUNT[user_id] = SHARE_COUNT.get(user_id, 0) + 1
+                await context.bot.send_message(chat_id=user_id, text=f'Share thành công: {id_share}, Số lần: {SHARE_COUNT[user_id]}')
+                break
+             else:
+                  await context.bot.send_message(chat_id=user_id, text=f"Lỗi share: Status code {response.status_code}")
 
-    except Exception as e:
-      bot.send_message(message.chat.id, f"Lỗi share: {e}")
-    time.sleep(delay_time)
+        except RequestException as e:
+           retries +=1
+           if retries == MAX_RETRIES:
+              await context.bot.send_message(chat_id=user_id, text=f"Lỗi share sau {MAX_RETRIES} lần thử: {e}")
+              break
+           else:
+             logging.warning(f"Lỗi share: {e}, đang thử lại lần {retries}/{MAX_RETRIES}")
+             await asyncio.sleep(2) # wait for 2 seconds before retry
+        except Exception as e:
+           await context.bot.send_message(chat_id=user_id, text=f"Lỗi share: {e}")
+           break # Exit retry loop
 
-def start_share(message, bot, cookie_file, id_share, delay_time, total_share):
-    user_id = message.from_user.id
+    await asyncio.sleep(delay_time)
+
+def start_share(update, context, cookie_file, id_share, delay_time, total_share):
+    user_id = update.effective_user.id
     STOP_REQUESTED[user_id] = False
     SHARE_COUNT[user_id] = 0
 
     try:
         if SHARE_IN_PROGRESS.get(user_id, False):
-            bot.reply_to(message, "Đang có tiến trình share khác chạy. Vui lòng đợi tiến trình hiện tại kết thúc.")
+            context.bot.send_message(chat_id=user_id, text="Đang có tiến trình share khác chạy. Vui lòng đợi tiến trình hiện tại kết thúc.")
             return
 
         SHARE_IN_PROGRESS[user_id] = True
         input_file = cookie_file.read().split('\n')
         all_tokens = get_token(input_file)
         if not all_tokens:
-             bot.send_message(message.chat.id, "Không tìm thấy token hợp lệ trong file cookie.")
-             SHARE_IN_PROGRESS[user_id] = False
-             return
+            context.bot.send_message(chat_id=user_id, text="Không tìm thấy token hợp lệ trong file cookie.")
+            SHARE_IN_PROGRESS[user_id] = False
+            return
 
         stt = 0
         while True:
             for tach in all_tokens:
                 if STOP_REQUESTED.get(user_id, False):
-                   bot.send_message(message.chat.id, "Tiến trình share đã được dừng.")
-                   SHARE_IN_PROGRESS[user_id] = False
-                   return
+                    context.bot.send_message(chat_id=user_id, text="Tiến trình share đã được dừng.")
+                    SHARE_IN_PROGRESS[user_id] = False
+                    return
 
                 stt += 1
-                thread = threading.Thread(target=share, args=(tach, id_share, bot, message, delay_time))
+                thread = threading.Thread(target=lambda: asyncio.run(share(tach, id_share, context, delay_time)))
                 thread.start()
                 if stt >= total_share:
                     break
             if stt >= total_share:
                 break
-        bot.send_message(message.chat.id, "Hoàn thành quá trình share.")
+        context.bot.send_message(chat_id=user_id, text="Hoàn thành quá trình share.")
 
     except Exception as e:
-        bot.send_message(message.chat.id, f"Có lỗi xảy ra: {e}")
+        context.bot.send_message(chat_id=user_id, text=f"Có lỗi xảy ra: {e}")
     finally:
         SHARE_IN_PROGRESS[user_id] = False
         if user_id in ACTIVE_THREADS:
             ACTIVE_THREADS[user_id]['status'] = 'stopped'
 
 # --- BOT COMMAND HANDLERS ---
-bot = telebot.TeleBot(BOT_TOKEN)
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Xin chào! Bot đã sẵn sàng hoạt động. Sử dụng /help để xem hướng dẫn.")
 
-@bot.message_handler(commands=[START_COMMAND])
-def send_welcome(message):
-    bot.reply_to(message, "Xin chào! Bot đã sẵn sàng hoạt động. Sử dụng /help để xem hướng dẫn.")
-
-@bot.message_handler(commands=[HELP_COMMAND])
-def send_help(message):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = f"""
 **Hướng Dẫn Sử Dụng Bot Share:**
 Sử dụng các lệnh sau:
 
-*{START_COMMAND}*: Bắt đầu bot.
-*{HELP_COMMAND}*: Xem hướng dẫn sử dụng.
-*{SHARE_COMMAND}*: Bắt đầu quá trình share.
-*{STOP_COMMAND}*: Dừng tiến trình share đang chạy.
-*{STATUS_COMMAND}*: Xem trạng thái của tiến trình share.
+/{START_COMMAND}*: Bắt đầu bot.
+/{HELP_COMMAND}*: Xem hướng dẫn sử dụng.
+/{SHARE_COMMAND}*: Bắt đầu quá trình share.
+/{STOP_COMMAND}*: Dừng tiến trình share đang chạy.
+/{STATUS_COMMAND}*: Xem trạng thái của tiến trình share.
 
 **Lệnh Share:**
 Để sử dụng lệnh share bạn cần làm theo các bước sau:
-1. Gửi lệnh: {SHARE_COMMAND}.
-2. Gửi một file chứa cookie (mỗi cookie 1 dòng).
+1. Gửi lệnh: /{SHARE_COMMAND}.
+2. Gửi một file chứa cookie (mỗi cookie trên 1 dòng).
 3. Gửi id facebook cần share.
 4. Gửi delay time mỗi lần share.
 5. Gửi số lượng share.
 """
-    bot.reply_to(message, help_text, parse_mode='Markdown')
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_text, parse_mode='Markdown')
 
-@bot.message_handler(commands=[STATUS_COMMAND])
-def status(message):
-    user_id = message.from_user.id
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     if user_id in ACTIVE_THREADS:
         status = ACTIVE_THREADS[user_id]['status']
         count = SHARE_COUNT.get(user_id, 0)
-        bot.send_message(message.chat.id, f"Trạng thái: {status}, Đã share {count} lần.")
+        await context.bot.send_message(chat_id=user_id, text=f"Trạng thái: {status}, Đã share {count} lần.")
     else:
-        bot.send_message(message.chat.id, "Không có tiến trình share nào đang chạy.")
+        await context.bot.send_message(chat_id=user_id, text="Không có tiến trình share nào đang chạy.")
 
-@bot.message_handler(commands=[STOP_COMMAND])
-def stop_share_command(message):
-    user_id = message.from_user.id
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     if user_id in ACTIVE_THREADS:
         STOP_REQUESTED[user_id] = True
-        bot.reply_to(message, "Đã yêu cầu dừng tiến trình share.")
+        await context.bot.send_message(chat_id=user_id, text="Đã yêu cầu dừng tiến trình share.")
     else:
-        bot.reply_to(message, "Không có tiến trình share nào đang chạy để dừng.")
+        await context.bot.send_message(chat_id=user_id, text="Không có tiến trình share nào đang chạy để dừng.")
 
-@bot.message_handler(commands=[SHARE_COMMAND], content_types=['text'])
-def handle_share_command(message):
-    user_id = message.from_user.id
+async def handle_share_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     if SHARE_IN_PROGRESS.get(user_id, False):
-      bot.reply_to(message, "Đang có tiến trình share khác chạy. Vui lòng đợi tiến trình hiện tại kết thúc.")
-      return
-    bot.reply_to(message, "Vui lòng gửi file chứa cookie (mỗi cookie trên 1 dòng).")
-    bot.register_next_step_handler(message, process_cookie_file)
-
-def process_cookie_file(message):
-    if message.content_type != 'document':
-        bot.reply_to(message, "Vui lòng gửi một file.")
+        await context.bot.send_message(chat_id=user_id, text="Đang có tiến trình share khác chạy. Vui lòng đợi tiến trình hiện tại kết thúc.")
         return
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        with open('temp_cookies.txt', 'wb') as cookie_file:
-            cookie_file.write(downloaded_file)
-        with open('temp_cookies.txt', 'r') as cookie_file:
-            bot.reply_to(message, "Vui lòng nhập ID bài viết hoặc trang bạn muốn share.")
-            bot.register_next_step_handler(message, process_id_share, cookie_file)
-    except Exception as e:
-        bot.reply_to(message, f"Có lỗi xảy ra khi xử lý file: {e}")
+    await context.bot.send_message(chat_id=user_id, text="Vui lòng gửi file chứa cookie (mỗi cookie trên 1 dòng).")
+    context.user_data["waiting_for_cookie_file"] = True
 
-def process_id_share(message, cookie_file):
-    id_share = message.text.strip()
-    bot.reply_to(message, "Vui lòng nhập thời gian delay giữa các lần share (giây).")
-    bot.register_next_step_handler(message, process_delay_time, cookie_file, id_share)
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get("waiting_for_cookie_file"):
+        try:
+            file_id = update.message.document.file_id
+            file_path = await context.bot.get_file(file_id)
+            file = await context.bot.download_file(file_path.file_path)
 
-def process_delay_time(message, cookie_file, id_share):
-    try:
-        delay_time = int(message.text.strip())
-        if delay_time < 0:
-            raise ValueError("Delay time phải là số dương.")
-        bot.reply_to(message, "Vui lòng nhập số lượng share bạn muốn thực hiện.")
-        bot.register_next_step_handler(message, process_total_share, cookie_file, id_share, delay_time)
-    except ValueError as e:
-        bot.reply_to(message, f"Giá trị không hợp lệ: {e}")
+            with open('temp_cookies.txt', 'wb') as cookie_file:
+               cookie_file.write(file)
+            with open('temp_cookies.txt', 'r') as cookie_file:
+                 await context.bot.send_message(chat_id=user_id, text="Vui lòng nhập ID bài viết hoặc trang bạn muốn share.")
+                 context.user_data["waiting_for_cookie_file"] = False
+                 context.user_data["waiting_for_id"] = True
 
-def process_total_share(message, cookie_file, id_share, delay_time):
-    try:
-        total_share = int(message.text.strip())
-        if total_share < 1 :
-            raise ValueError("Số lượng share phải lớn hơn 0.")
-        bot.reply_to(message, "Bắt đầu share...")
-        threading.Thread(target=start_share, args=(message, bot, cookie_file, id_share, delay_time, total_share)).start()
-    except ValueError as e:
-        bot.reply_to(message, f"Giá trị không hợp lệ: {e}")
+        except Exception as e:
+             await context.bot.send_message(chat_id=user_id, text=f"Có lỗi xảy ra khi xử lý file: {e}")
+    elif context.user_data.get("waiting_for_id"):
+      await context.bot.send_message(chat_id=user_id, text="Vui lòng gửi ID bài viết bằng chữ.")
+    else:
+      return
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get("waiting_for_id"):
+        id_share = update.message.text.strip()
+        await context.bot.send_message(chat_id=user_id, text="Vui lòng nhập thời gian delay giữa các lần share (giây).")
+        context.user_data["waiting_for_id"] = False
+        context.user_data["waiting_for_delay"] = True
+        context.user_data["id_share"] = id_share
+    elif context.user_data.get("waiting_for_delay"):
+        try:
+            delay_time = int(update.message.text.strip())
+            if delay_time < 0:
+                raise ValueError("Delay time phải là số dương.")
+            await context.bot.send_message(chat_id=user_id, text="Vui lòng nhập số lượng share bạn muốn thực hiện.")
+            context.user_data["waiting_for_delay"] = False
+            context.user_data["waiting_for_total"] = True
+            context.user_data["delay_time"] = delay_time
+        except ValueError as e:
+              await context.bot.send_message(chat_id=user_id, text=f"Giá trị không hợp lệ: {e}")
+    elif context.user_data.get("waiting_for_total"):
+        try:
+          total_share = int(update.message.text.strip())
+          if total_share < 1:
+              raise ValueError("Số lượng share phải lớn hơn 0.")
+          await context.bot.send_message(chat_id=user_id, text="Bắt đầu share...")
+          context.user_data["waiting_for_total"] = False
+          threading.Thread(target=start_share, args=(update, context, open('temp_cookies.txt', 'r'), context.user_data["id_share"], context.user_data["delay_time"], total_share)).start()
+        except ValueError as e:
+             await context.bot.send_message(chat_id=user_id, text=f"Giá trị không hợp lệ: {e}")
+    else:
+        return
 
 # --- MAIN FUNCTION ---
 if __name__ == '__main__':
-    bot.polling(none_stop=True)
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler(START_COMMAND, start_command))
+    application.add_handler(CommandHandler(HELP_COMMAND, help_command))
+    application.add_handler(CommandHandler(STATUS_COMMAND, status_command))
+    application.add_handler(CommandHandler(STOP_COMMAND, stop_command))
+    application.add_handler(CommandHandler(SHARE_COMMAND, handle_share_command))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.run_polling()
