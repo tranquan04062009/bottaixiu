@@ -8,7 +8,7 @@ import telebot
 from telebot import types
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+BOT_TOKEN = "7766543633:AAFnN9tgGWFDyApzplak0tiJTafCxciFydo"
 SHARE_COMMAND = "/share"
 START_COMMAND = "/start"
 HELP_COMMAND = "/help"
